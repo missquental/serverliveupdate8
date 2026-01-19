@@ -919,7 +919,7 @@ def auto_process_auth_code():
     """Automatically process authorization code from URL"""
     try:
         # Check URL parameters
-        query_params = st.experimental_get_query_params()
+        query_params = st.query_params if hasattr(st, 'query_params') else {}
         
         if 'code' in query_params:
             auth_code = query_params['code'][0] if isinstance(query_params['code'], list) else query_params['code']
@@ -968,8 +968,8 @@ def auto_process_auth_code():
                                     st.success(f"✅ Successfully connected to: {channel['snippet']['title']}")
                                     
                                     # Clear URL parameters
-                                    st.experimental_set_query_params()
-                                    st.experimental_rerun()
+                                    st.query_params = {}
+                                    st.rerun()
                                 else:
                                     st.error("❌ Could not fetch channel information")
                             else:
@@ -1155,7 +1155,7 @@ def main():
                                 st.session_state['channel_info'] = channel_info
                                 update_channel_last_used(channel['name'])
                                 st.success(f"✅ Loaded: {channel['name']}")
-                                st.experimental_rerun()
+                                st.rerun()
                             else:
                                 st.error("❌ Authentication expired")
                         else:
@@ -1171,7 +1171,7 @@ def main():
         if st.button("🔑 Use Predefined OAuth Config", help="Use built-in OAuth configuration"):
             st.session_state['oauth_config'] = PREDEFINED_OAUTH_CONFIG['web']
             st.success("✅ Predefined OAuth config loaded!")
-            st.experimental_rerun()
+            st.rerun()
         
         # Authorization Process
         if 'oauth_config' in st.session_state:
@@ -1228,7 +1228,7 @@ def main():
                                             channel['id'],
                                             creds_dict
                                         )
-                                        st.experimental_rerun()
+                                        st.rerun()
                                     else:
                                         st.error("❌ Could not fetch channel information")
                                 else:
@@ -1251,7 +1251,7 @@ def main():
         col_log1, col_log2 = st.columns(2)
         with col_log1:
             if st.button("🔄 Refresh Logs"):
-                st.experimental_rerun()
+                st.rerun()
         
         with col_log2:
             if st.button("🗑️ Clear Session Logs"):
@@ -1447,7 +1447,7 @@ def main():
                     upload_thread.start()
                     
                     st.success("Bulk upload started! Check the progress in the Upload History tab.")
-                    st.experimental_rerun()
+                    st.rerun()
         
         with bulk_tab2:
             st.subheader("Upload History")
@@ -1476,7 +1476,7 @@ def main():
                             st.write(f"**Completed:** {completed_at}")
                         
                         # Detail video untuk job ini
-                        if st.button(f"📋 View Details for {job_id}"):
+                        if st.button(f"📋 View Details for {job_id}", key=f"view_details_{job_id}"):
                             videos = get_bulk_upload_videos(job_id)
                             if videos:
                                 video_df = []
@@ -1627,7 +1627,7 @@ def main():
                         session_id=st.session_state['session_id']
                     ):
                         st.success("🎉 Auto live stream started successfully!")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Failed to start auto live stream")
                 else:
@@ -1798,7 +1798,7 @@ def main():
                                                         'stream_url': stream_info['stream_url']
                                                     }
                                                     st.success(f"✅ Using stream: {broadcast['snippet']['title']}")
-                                                    st.experimental_rerun()
+                                                    st.rerun()
                                                 else:
                                                     st.error("❌ Could not get stream key for this broadcast")
                             else:
@@ -2128,7 +2128,7 @@ def main():
                 st.session_state['ffmpeg_thread'].start()
                 st.success("🚀 Streaming started!")
                 log_to_database(st.session_state['session_id'], "INFO", f"Streaming started: {video_path}")
-                st.experimental_rerun()
+                st.rerun()
         
         # Batch Start Streaming Button
         if st.button("🔄 Start Batch Streaming", type="primary", help="Start multiple live streams simultaneously with different settings"):
@@ -2196,7 +2196,7 @@ def main():
                 os.remove("temp_video.mp4")
             st.warning("⏸️ Streaming stopped!")
             log_to_database(st.session_state['session_id'], "INFO", "Streaming stopped by user")
-            st.experimental_rerun()
+            st.rerun()
         
         # Stop Batch Streaming Button
         if st.button("⏹️ Stop All Batch Streaming", type="secondary"):
@@ -2209,7 +2209,7 @@ def main():
                 st.session_state['batch_streams'] = {}
                 st.session_state['ffmpeg_threads'] = {}
                 st.warning("⏹️ All batch streaming stopped!")
-                st.experimental_rerun()
+                st.rerun()
         
         # Live broadcast info
         if 'live_broadcast_info' in st.session_state:
@@ -2259,7 +2259,7 @@ def main():
                 st.success("Stream key displayed above!")
         
         if st.button("🔄 Refresh Status"):
-            st.experimental_rerun()
+            st.rerun()
             
         # Durasi Streaming Otomatis
         st.subheader("🕒 Durasi Streaming Otomatis")
@@ -2322,7 +2322,7 @@ def main():
         
         if auto_refresh and (streaming or ('batch_streams' in st.session_state and any(b.get('streaming', False) for b in st.session_state['batch_streams'].values()))):
             time.sleep(2)
-            st.experimental_rerun()
+            st.rerun()
     
     with tab2:
         st.subheader("Current Session History")
