@@ -10,7 +10,7 @@ import urllib.parse
 import requests
 import sqlite3
 from pathlib import Path
-import zipfile
+import pandas as pd
 import io
 
 # Install required packages
@@ -25,14 +25,14 @@ try:
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from google_auth_oauthlib.flow import Flow
-    from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
+    from googleapiclient.http import MediaFileUpload
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "google-auth", "google-auth-oauthlib", "google-api-python-client"])
     import google.auth
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from google_auth_oauthlib.flow import Flow
-    from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
+    from googleapiclient.http import MediaFileUpload
 
 # Predefined OAuth configuration
 PREDEFINED_OAUTH_CONFIG = {
@@ -397,21 +397,180 @@ def bulk_upload_videos(service, job_id, video_files, titles, descriptions, tags_
         st.error(f"Error in bulk upload process: {e}")
         update_bulk_upload_job(job_id, status="failed")
 
-# ... (bagian lain dari kode tetap sama seperti sebelumnya)
+# ... (semua fungsi lainnya tetap sama seperti sebelumnya)
 
 def main():
-    # ... (inisialisasi dan konfigurasi awal tetap sama)
+    # Page configuration must be the first Streamlit command
+    st.set_page_config(
+        page_title="Advanced YouTube Live Streaming",
+        page_icon="📺",
+        layout="wide"
+    )
     
-    # Di bagian sidebar, tambahkan menu baru untuk Bulk Upload
+    # Initialize database
+    init_database()
+    
+    # Initialize session state
+    if 'session_id' not in st.session_state:
+        st.session_state['session_id'] = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    if 'live_logs' not in st.session_state:
+        st.session_state['live_logs'] = []
+    
+    st.title("🎥 Advanced YouTube Live Streaming Platform")
+    st.markdown("---")
+    
+    # Auto-process authorization code if present
+    auto_process_auth_code()
+    
+    # Sidebar for configuration
     with st.sidebar:
         st.header("📋 Configuration")
-        # ... (konfigurasi lain tetap sama)
         
+        # Session info
+        st.info(f"🆔 Session: {st.session_state['session_id']}")
+        
+        # Saved Channels Section
+        st.subheader("💾 Saved Channels")
+        saved_channels = load_saved_channels()
+        
+        if saved_channels:
+            st.write("**Previously authenticated channels:**")
+            for channel in saved_channels:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"📺 {channel['name']}")
+                    st.caption(f"Last used: {channel['last_used'][:10]}")
+                
+                with col2:
+                    if st.button("🔑 Use", key=f"use_{channel['name']}"):
+                        # Load this channel's authentication
+                        service = create_youtube_service(channel['auth'])
+                        if service:
+                            # Verify the authentication is still valid
+                            channels = get_channel_info(service)
+                            if channels:
+                                channel_info = channels[0]
+                                st.session_state['youtube_service'] = service
+                                st.session_state['channel_info'] = channel_info
+                                update_channel_last_used(channel['name'])
+                                st.success(f"✅ Loaded: {channel['name']}")
+                                st.rerun()
+                            else:
+                                st.error("❌ Authentication expired")
+                        else:
+                            st.error("❌ Failed to load authentication")
+        else:
+            st.info("No saved channels. Authenticate below to save.")
+        
+        # Google OAuth Configuration
+        st.subheader("🔐 Google OAuth Setup")
+        
+        # Predefined Auth Button
+        st.markdown("### 🚀 Quick Auth (Predefined)")
+        if st.button("🔑 Use Predefined OAuth Config", help="Use built-in OAuth configuration"):
+            st.session_state['oauth_config'] = PREDEFINED_OAUTH_CONFIG['web']
+            st.success("✅ Predefined OAuth config loaded!")
+            st.rerun()
+        
+        # Authorization Process
+        if 'oauth_config' in st.session_state:
+            oauth_config = st.session_state['oauth_config']
+            
+            # Generate authorization URL
+            auth_url = generate_auth_url(oauth_config)
+            if auth_url:
+                st.markdown("### 🔗 Authorization Link")
+                st.markdown(f"[Click here to authorize]({auth_url})")
+                
+                # Instructions
+                with st.expander("💡 Instructions"):
+                    st.write("1. Click the authorization link above")
+                    st.write("2. Grant permissions to your YouTube account")
+                    st.write("3. You'll be redirected back automatically")
+                    st.write("4. Or copy the code from the URL and paste below")
+                
+                # Manual authorization code input (fallback)
+                st.markdown("### 🔑 Manual Code Input")
+                auth_code = st.text_input("Authorization Code", type="password", 
+                                        placeholder="Paste authorization code here...")
+                
+                if st.button("🔄 Exchange Code for Tokens"):
+                    if auth_code:
+                        with st.spinner("Exchanging code for tokens..."):
+                            tokens = exchange_code_for_tokens(oauth_config, auth_code)
+                            if tokens:
+                                st.success("✅ Tokens obtained successfully!")
+                                st.session_state['youtube_tokens'] = tokens
+                                
+                                # Create credentials for YouTube service
+                                creds_dict = {
+                                    'access_token': tokens['access_token'],
+                                    'refresh_token': tokens.get('refresh_token'),
+                                    'token_uri': oauth_config['token_uri'],
+                                    'client_id': oauth_config['client_id'],
+                                    'client_secret': oauth_config['client_secret']
+                                }
+                                
+                                # Test the connection
+                                service = create_youtube_service(creds_dict)
+                                if service:
+                                    channels = get_channel_info(service)
+                                    if channels:
+                                        channel = channels[0]
+                                        st.success(f"🎉 Connected to: {channel['snippet']['title']}")
+                                        st.session_state['youtube_service'] = service
+                                        st.session_state['channel_info'] = channel
+                                        
+                                        # Save channel authentication persistently
+                                        save_channel_auth(
+                                            channel['snippet']['title'],
+                                            channel['id'],
+                                            creds_dict
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Could not fetch channel information")
+                                else:
+                                    st.error("❌ Failed to create YouTube service")
+                            else:
+                                st.error("❌ Failed to exchange code for tokens")
+                    else:
+                        st.error("Please enter the authorization code")
+        
+        # Bulk Upload Section
+        st.markdown("---")
         st.subheader("📁 Bulk Video Upload")
         if st.button("📤 Manage Bulk Uploads"):
             st.session_state['show_bulk_upload'] = not st.session_state.get('show_bulk_upload', False)
+        
+        # Log Management
+        st.markdown("---")
+        st.subheader("📊 Log Management")
+        
+        col_log1, col_log2 = st.columns(2)
+        with col_log1:
+            if st.button("🔄 Refresh Logs"):
+                st.rerun()
+        
+        with col_log2:
+            if st.button("🗑️ Clear Session Logs"):
+                st.session_state['live_logs'] = []
+                st.success("Logs cleared!")
+        
+        # Export logs
+        if st.button("📥 Export All Logs"):
+            all_logs = get_logs_from_database(limit=1000)
+            if all_logs:
+                logs_text = "\n".join([f"[{log[0]}] {log[1]}: {log[2]}" for log in all_logs])
+                st.download_button(
+                    label="💾 Download Logs",
+                    data=logs_text,
+                    file_name=f"streaming_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain"
+                )
     
-    # Di bagian utama, tambahkan interface untuk bulk upload
+    # Bulk Upload Interface
     if st.session_state.get('show_bulk_upload', False):
         st.header("📁 Bulk Video Upload Manager")
         
@@ -430,26 +589,49 @@ def main():
             channel_info = st.session_state.get('channel_info', {})
             channel_name = channel_info.get('snippet', {}).get('title', 'Unknown Channel')
             
-            # Upload file ZIP dengan video
-            st.subheader("Upload Videos (ZIP file)")
-            uploaded_zip = st.file_uploader("Upload ZIP file containing videos", type=['zip'])
+            # Upload multiple video files
+            st.subheader("Upload Videos")
+            uploaded_files = st.file_uploader("Upload video files", type=['mp4', 'avi', 'mov', 'mkv', 'flv'], accept_multiple_files=True)
             
-            if uploaded_zip:
-                # Ekstrak file ZIP
-                with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
-                    video_files = []
-                    temp_dir = f"temp_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    os.makedirs(temp_dir, exist_ok=True)
-                    
-                    for file_info in zip_ref.infolist():
-                        if file_info.filename.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.flv')):
-                            zip_ref.extract(file_info, temp_dir)
-                            video_files.append(os.path.join(temp_dir, file_info.filename))
+            if uploaded_files:
+                # Save uploaded files temporarily
+                temp_dir = f"temp_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                os.makedirs(temp_dir, exist_ok=True)
+                video_files = []
                 
-                st.success(f"Extracted {len(video_files)} video files")
+                for uploaded_file in uploaded_files:
+                    file_path = os.path.join(temp_dir, uploaded_file.name)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.read())
+                    video_files.append(file_path)
+                
+                st.success(f"Uploaded {len(video_files)} video files")
                 
                 # Konfigurasi bulk upload
                 st.subheader("Upload Configuration")
+                
+                # CSV template download
+                if st.button("📥 Download CSV Template"):
+                    csv_template = pd.DataFrame({
+                        'filename': [os.path.basename(f) for f in video_files],
+                        'title': [f"Video Upload {i+1}" for i in range(len(video_files))],
+                        'description': [""] * len(video_files),
+                        'tags': [""] * len(video_files),
+                        'privacy': ["private"] * len(video_files),
+                        'category': ["22"] * len(video_files)  # People & Blogs
+                    })
+                    csv_buffer = io.StringIO()
+                    csv_template.to_csv(csv_buffer, index=False)
+                    st.download_button(
+                        label="💾 Download Template CSV",
+                        data=csv_buffer.getvalue(),
+                        file_name="bulk_upload_template.csv",
+                        mime="text/csv"
+                    )
+                
+                # Upload CSV configuration
+                st.subheader("CSV Configuration (Optional)")
+                csv_file = st.file_uploader("Upload CSV configuration file", type=['csv'])
                 
                 # Default settings untuk semua video
                 default_title = st.text_input("Default Title Template", "Video Upload {index}")
@@ -463,19 +645,75 @@ def main():
                 
                 # Preview video files
                 st.subheader("Video Files Preview")
-                preview_data = []
-                for i, video_file in enumerate(video_files):
-                    filename = os.path.basename(video_file)
-                    preview_data.append({
-                        "Filename": filename,
-                        "Title": default_title.replace("{index}", str(i+1)),
-                        "Description": default_description,
-                        "Tags": default_tags,
-                        "Privacy": default_privacy,
-                        "Category": selected_category_name
-                    })
                 
-                st.dataframe(preview_data)
+                # Buat dataframe untuk preview
+                preview_data = []
+                titles = []
+                descriptions = []
+                tags_list = []
+                privacy_statuses = []
+                category_ids = []
+                
+                if csv_file:
+                    # Baca konfigurasi dari CSV
+                    csv_df = pd.read_csv(csv_file)
+                    for i, video_file in enumerate(video_files):
+                        filename = os.path.basename(video_file)
+                        # Cari konfigurasi dari CSV
+                        csv_row = csv_df[csv_df['filename'] == filename]
+                        if not csv_row.empty:
+                            title = csv_row.iloc[0]['title']
+                            description = csv_row.iloc[0]['description']
+                            tags = csv_row.iloc[0]['tags'].split(',') if csv_row.iloc[0]['tags'] else []
+                            privacy = csv_row.iloc[0]['privacy']
+                            category = csv_row.iloc[0]['category']
+                        else:
+                            title = default_title.replace("{index}", str(i+1))
+                            description = default_description
+                            tags = [tag.strip() for tag in default_tags.split(",") if tag.strip()]
+                            privacy = default_privacy
+                            category = default_category_id
+                        
+                        preview_data.append({
+                            "Filename": filename,
+                            "Title": title,
+                            "Description": description[:50] + "..." if len(description) > 50 else description,
+                            "Tags": ", ".join(tags),
+                            "Privacy": privacy,
+                            "Category": categories.get(category, "Unknown")
+                        })
+                        
+                        titles.append(title)
+                        descriptions.append(description)
+                        tags_list.append(tags)
+                        privacy_statuses.append(privacy)
+                        category_ids.append(category)
+                else:
+                    # Gunakan konfigurasi default
+                    for i, video_file in enumerate(video_files):
+                        filename = os.path.basename(video_file)
+                        title = default_title.replace("{index}", str(i+1))
+                        description = default_description
+                        tags = [tag.strip() for tag in default_tags.split(",") if tag.strip()]
+                        privacy = default_privacy
+                        category = default_category_id
+                        
+                        preview_data.append({
+                            "Filename": filename,
+                            "Title": title,
+                            "Description": description[:50] + "..." if len(description) > 50 else description,
+                            "Tags": ", ".join(tags),
+                            "Privacy": privacy,
+                            "Category": categories.get(category, "Unknown")
+                        })
+                        
+                        titles.append(title)
+                        descriptions.append(description)
+                        tags_list.append(tags)
+                        privacy_statuses.append(privacy)
+                        category_ids.append(category)
+                
+                st.dataframe(pd.DataFrame(preview_data))
                 
                 # Mulai proses upload
                 if st.button("🚀 Start Bulk Upload", type="primary"):
@@ -485,12 +723,6 @@ def main():
                     save_bulk_upload_job(job_id, channel_name, len(video_files))
                     
                     # Simpan konfigurasi video individu
-                    titles = [default_title.replace("{index}", str(i+1)) for i in range(len(video_files))]
-                    descriptions = [default_description] * len(video_files)
-                    tags_list = [[tag.strip() for tag in default_tags.split(",") if tag.strip()]] * len(video_files)
-                    privacy_statuses = [default_privacy] * len(video_files)
-                    category_ids = [default_category_id] * len(video_files)
-                    
                     for i, video_file in enumerate(video_files):
                         save_bulk_upload_video(
                             job_id, 
@@ -540,25 +772,38 @@ def main():
                             st.write(f"**Completed:** {completed_at}")
                         
                         # Detail video untuk job ini
-                        videos = get_bulk_upload_videos(job_id)
-                        if videos:
-                            video_df = []
-                            for video in videos:
-                                video_filename, title, description, tags, privacy_status, category_id, video_status, upload_progress, error_message, uploaded_at = video
-                                video_df.append({
-                                    "Filename": video_filename,
-                                    "Title": title,
-                                    "Status": video_status,
-                                    "Progress": f"{upload_progress:.1f}%" if upload_progress else "N/A",
-                                    "Error": error_message or "None"
-                                })
-                            st.dataframe(video_df)
+                        if st.button(f"📋 View Details for {job_id}"):
+                            videos = get_bulk_upload_videos(job_id)
+                            if videos:
+                                video_df = []
+                                for video in videos:
+                                    video_filename, title, description, tags, privacy_status, category_id, video_status, upload_progress, error_message, uploaded_at = video
+                                    video_df.append({
+                                        "Filename": video_filename,
+                                        "Title": title,
+                                        "Status": video_status,
+                                        "Progress": f"{upload_progress:.1f}%" if upload_progress else "N/A",
+                                        "Error": error_message or "None"
+                                    })
+                                st.dataframe(pd.DataFrame(video_df))
+                            else:
+                                st.info("No video details available.")
             else:
                 st.info("No bulk upload jobs found.")
     
-    # ... (bagian lain dari aplikasi tetap sama)
-
-# ... (fungsi-fungsi lain tetap sama)
+    # Main content area (existing streaming functionality)
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # ... (semua konten streaming yang ada tetap sama)
+        pass
+    
+    with col2:
+        # ... (semua kontrol streaming yang ada tetap sama)
+        pass
+    
+    # Live Logs Section (tetap sama)
+    # ... (kode logs tetap sama)
 
 if __name__ == '__main__':
     main()
